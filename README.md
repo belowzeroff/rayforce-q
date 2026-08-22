@@ -18,6 +18,16 @@ The client is exposed as `.q.*` rayfall env functions, so any script or REPL ses
 (.q.close h)
 ```
 
+Connections live on the runtime's event loop, so the peer can **push** to them — which is all a q subscription is. Frames are routed by message type: a response wakes the `.q.send` waiting for it, anything else is evaluated. A publisher's `` (`upd;packet) `` therefore calls `upd`, the same dispatch q performs with `value x`:
+
+```clojure
+(set upd (fn [packet] (insert 'mtr (get packet 'metrics))))
+(set h (.q.connect "localhost" 5000 "" "" 5000))
+(.q.send h ".net.sub[0]")                        ;; subscribe once — packets then arrive on their own
+```
+
+A host without a poll (a binding that embeds only the client) keeps the plain blocking `q.c` path and its raw-fd handle.
+
 ### Server
 
 The server is exposed via the `-q PORT` flag — it shares the REPL's event loop, so the REPL stays interactive while it serves Q clients:

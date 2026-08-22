@@ -345,9 +345,17 @@ int main(int argc, char **argv) {
   const char *host = "127.0.0.1";
   const char *port = "0", *authport = "0";
   const char *user = "", *pass = "";
+  int use_poll = 0;
   int first = 1;
   for (int i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
+    if (strcmp(argv[i], "--poll") == 0) {
+      /* Publish a poll into the runtime, so .q.connect puts connections on
+       * an event loop instead of handing back a bare blocking fd. That is
+       * the mode the rayforce binary always runs in, and the only one where
+       * a peer can push to us — see test/rfl/push. */
+      use_poll = 1;
+      first = i + 1;
+    } else if (strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
       host = argv[++i];
       first = i + 1;
     } else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
@@ -379,9 +387,20 @@ int main(int argc, char **argv) {
   for (int i = first; i < argc; i++) {
     /* Fresh runtime per file: isolates handles and `set` bindings. */
     ray_runtime_t *rt = ray_runtime_create(0, NULL);
+    ray_poll_t *poll = NULL;
+    if (use_poll) {
+      poll = ray_poll_create();
+      ray_runtime_set_poll(poll);
+    }
     q_env_register();
     inject_server(host, port, authport, user, pass);
     failures += run_rfl_file(argv[i]);
+    if (poll != NULL) {
+      /* Destroy before the runtime: closing a selector releases ray_t state
+       * held for it. Also closes whatever the file left open. */
+      ray_poll_destroy(poll);
+      ray_runtime_set_poll(NULL);
+    }
     ray_runtime_destroy(rt);
     files++;
   }

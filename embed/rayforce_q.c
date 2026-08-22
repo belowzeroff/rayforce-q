@@ -26,14 +26,25 @@
  */
 
 #include "q.h"        /* q_connect / q_send / q_close            */
-#include "q_server.h" /* q_serve, ray_poll_t                     */
+#include "q_server.h" /* q_serve, q_conn_*, ray_poll_t           */
 
-#include "lang/env.h"  /* ray_env_bind, ray_env_bind_flat        */
-#include "lang/eval.h" /* ray_fn_*, RAY_FN_NONE                  */
+#include "core/runtime.h" /* ray_runtime_get_poll                */
+#include "lang/env.h"     /* ray_env_bind, ray_env_bind_flat     */
+#include "lang/eval.h"    /* ray_fn_*, RAY_FN_NONE               */
 
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Connections live on the event loop whenever there is one — that is what
+ * makes a handle able to receive pushes and not just answers. A host without
+ * a poll (a binding embedding only the client, the .rfl test driver) keeps
+ * the plain blocking q.c path, and the handle stays the raw socket fd.
+ *
+ * The two are never mixed inside one process, so a handle is unambiguous:
+ * with a poll every handle is a selector id, without one every handle is an
+ * fd. */
+static ray_poll_t *q_poll(void) { return (ray_poll_t *)ray_runtime_get_poll(); }
 
 static int q_parse_port(const char *s, int *out) {
   if (s == NULL || *s == '\0')
@@ -126,7 +137,17 @@ static ray_t *qb_connect(ray_t **args, int64_t n) {
       return ray_error("connect", ".q.connect: connect failed");
     }
   }
-  return ray_i64(fd);
+
+  ray_poll_t *poll = q_poll();
+  if (poll == NULL)
+    return ray_i64(fd);
+
+  int64_t id = q_conn_attach(poll, fd);
+  if (id < 0) {
+    q_close(fd);
+    return ray_error("connect", ".q.connect: cannot attach to the event loop");
+  }
+  return ray_i64(id);
 }
 
 /* (.q.send handle msg) -> decoded response (may itself be a Q server error). */
@@ -135,6 +156,10 @@ static ray_t *qb_send(ray_t *handle, ray_t *msg) {
   int64_t fd = q_atom_i64(handle, &ok);
   if (!ok)
     return ray_error("type", ".q.send: handle must be an integer");
+
+  ray_poll_t *poll = q_poll();
+  if (poll != NULL)
+    return q_conn_send(poll, fd, msg);
 
   char err[128] = {0};
   ray_t *res = q_send((int)fd, msg, err, sizeof err);
@@ -152,7 +177,12 @@ static ray_t *qb_close(ray_t *handle) {
   int64_t fd = q_atom_i64(handle, &ok);
   if (!ok)
     return ray_error("type", ".q.close: handle must be an integer");
-  q_close((int)fd);
+
+  ray_poll_t *poll = q_poll();
+  if (poll != NULL)
+    q_conn_close(poll, fd);
+  else
+    q_close((int)fd);
   return RAY_NULL_OBJ;
 }
 

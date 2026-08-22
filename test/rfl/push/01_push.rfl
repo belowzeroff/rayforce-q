@@ -1,0 +1,75 @@
+;; Frames PUSHED by the peer on a client connection (driver --poll).
+;;
+;; Without an event loop a connection is request/response only: an async frame
+;; the server pushes lands in the receive buffer and the next .q.send reads it
+;; as its own response, leaving the connection one frame out of step forever.
+;; Every "regression" line below is that bug — it returns the pushed frame
+;; instead of the expected value if frames are not routed by message type.
+;;
+;; Each case makes the q server push to us and answer in the same expression:
+;;   neg[.z.w] <payload>; <result>
+;; so the async frame and the RESPONSE are both in flight on one round-trip.
+;;
+;; Scope: here the frames are always read by q_conn_send's pump, because the
+;; driver never runs the poll loop. Delivery driven by the loop itself — a
+;; push arriving while the process sits idle, which is what a subscriber
+;; actually lives on — shares this entire state machine and differs only in
+;; who calls recv; it is covered end-to-end against a live q publisher.
+
+(set h (.q.connect qhost qport))
+(>= h 0) -- true
+
+;; ---- an async list dispatches by name, exactly as q's `value x` would -----
+(set got 0)
+(set upd (fn [x] (set got x)))
+(.q.send h "neg[.z.w](`upd;42); 7") -- 7
+(.q.send h "1+1") -- 2                    ;; regression
+got -- 42
+
+;; ---- a pushed table arrives whole and typed ------------------------------
+(set upd (fn [t] (set got t)))
+(.q.send h "neg[.z.w](`upd;([] a:1 2 3; b:`x`y`z)); 0") -- 0
+(.q.send h "1+1") -- 2                    ;; regression
+(count got) -- 3
+(cols got) -- [a b]
+(get got 'a) -- [1 2 3]
+(get got 'b) -- [x y z]
+
+;; ---- a dict of tables: the shape a real q publisher sends -----------------
+(set upd (fn [d] (set got d)))
+(.q.send h "neg[.z.w](`upd;`metrics`quotes!(([] v:1.5 2.5);([] q:1 2 3))); 0") -- 0
+(.q.send h "1+1") -- 2                    ;; regression
+(count (get got 'metrics)) -- 2
+(count (get got 'quotes)) -- 3
+(get (get got 'metrics) 'v) -- [1.5 2.5]
+
+;; ---- several pushes in one go keep their order ---------------------------
+(set seen (til 0))
+(set upd (fn [x] (set seen (concat seen (enlist x)))))
+(.q.send h "{neg[.z.w](`upd;x)} each 1 2 3; 0") -- 0
+(.q.send h "1+1") -- 2                    ;; regression
+seen -- [1 2 3]
+
+;; ---- an async STRING payload is evaluated as Rayfall ---------------------
+(.q.send h "neg[.z.w] \"(set fromstr 99)\"; 0") -- 0
+(.q.send h "1+1") -- 2                    ;; regression
+fromstr -- 99
+
+;; ---- a push whose handler is missing must not wedge the connection -------
+;; (logs "q: async message raised an error" on stderr — that is the point:
+;;  an async failure has no reply channel, so it must be visible somewhere)
+(.q.send h "neg[.z.w](`nosuchhandler;1); 5") -- 5
+(.q.send h "3+4") -- 7
+
+;; ---- a handler that sends on ITS OWN handle is refused, not deadlocked ----
+;; Two waiters cannot both claim the next RESPONSE. The nested send comes back
+;; as an error; what matters is that the outer round-trip still completes and
+;; the connection stays in step afterwards.
+(set upd (fn [x] (set got (try (.q.send h "1+1") (fn [e] "refused")))))
+(.q.send h "neg[.z.w](`upd;1); 8") -- 8
+got -- "refused"
+(.q.send h "1+1") -- 2                    ;; regression
+
+;; ---- a closed handle is dead, not a stray fd -----------------------------
+(.q.close h)
+(.q.send h "1+1") !- handle

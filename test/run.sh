@@ -208,3 +208,13 @@ echo "q servers up: open=$HOST:$PORT auth=$HOST:$AUTHPORT; running client tests.
   --host "$HOST" --port "$PORT" \
   --authport "$AUTHPORT" --user "$Q_USER" --pass "$Q_PASS" \
   "$RFL_DIR"/client/*.rfl
+
+# ---- Leg 4: the same client tests with connections on an event loop, plus
+# the push tests that only exist in that mode. Re-running client/ is the point:
+# the poll path must be a drop-in for every request/response case, not just a
+# new feature bolted next to it.
+echo "running client + push tests with --poll ..."
+"$DRIVER" --poll \
+  --host "$HOST" --port "$PORT" \
+  --authport "$AUTHPORT" --user "$Q_USER" --pass "$Q_PASS" \
+  "$RFL_DIR"/client/*.rfl "$RFL_DIR"/push/*.rfl

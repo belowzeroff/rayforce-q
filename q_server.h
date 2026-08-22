@@ -52,4 +52,31 @@
  * poll selector id (>= 0) on success, or -1 on failure */
 int64_t q_serve(ray_poll_t *poll, int port);
 
+/* ===== Outbound connections =====
+ *
+ * q.c's client is blocking and poll-free by design (bindings without an event
+ * loop need it that way), which makes it request/response only: a frame the
+ * peer pushes unsolicited would be read as the answer to the next q_send.
+ *
+ * Attaching a connected fd to the poll removes that restriction. The event
+ * loop owns the reads, so a q publisher can push into this process — the
+ * shape every q subscription has: send `.net.sub` once, then receive.
+ */
+
+/* Put an already-connected, already-handshaken q_connect fd under `poll`'s
+ * rx machine. Returns a poll selector id (>= 0) — the handle for the calls
+ * below — or -1. The fd is owned by the poll from here on; do not q_close it.
+ */
+int64_t q_conn_attach(ray_poll_t *poll, int fd);
+
+/* Sync round-trip on an attached connection: write a SYNC frame, then pump
+ * this connection until its RESPONSE arrives — dispatching, not swallowing,
+ * any frame that arrives in between (a pushed async runs its handler, an
+ * inbound sync request is answered). Returns a freshly-owned object, which
+ * may be a RAY_ERROR from the peer or a local io/handle error. */
+ray_t *q_conn_send(ray_poll_t *poll, int64_t id, ray_t *msg);
+
+/* Close an attached connection and release its state. */
+void q_conn_close(ray_poll_t *poll, int64_t id);
+
 #endif /* RAYFORCE_Q_SERVER_H */
