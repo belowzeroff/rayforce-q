@@ -2,6 +2,24 @@
 
 All notable changes to `rayforce-q` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/), and the project adheres to [Semantic Versioning](https://semver.org/). Bindings pin a tag, so each release is a stable point they can build against.
 
+## [2.1.0]
+
+### Added
+
+- **Connections on the event loop** — `q_conn_attach(poll, fd)` puts an already-connected, already-handshaken `q_connect` fd under the poll's rx machine, with `q_conn_send` / `q_conn_close` for round-trips and teardown. `q_conn_send` writes its SYNC frame and then pumps the connection until the matching RESPONSE arrives, dispatching — not swallowing — whatever else lands in between. One rx state machine now serves both directions: inbound connections from the listener and outbound ones attached here. Mirrors `conn_pump` / `sync_send` in the rayforce core's own IPC.
+- **Rayforce can be a q subscriber.** A pushed frame is dispatched instead of ignored, so `(.q.send h ".net.sub[0]")` once is a complete subscription: packets then arrive on the event loop, with no polling and no timer. A non-string payload goes through `ray_eval`, which makes a publisher's `` (`upd;packet) `` call `upd` — exactly what q's `.z.ps` does with `value x`, so a subscriber reads the same in Rayfall as it does in a q RDB. List arguments are marked literal-fallback first, as `core/ipc.c` does, so symbols inside a payload stay data instead of resolving against the environment.
+- **`--poll` mode in the test driver**, plus `test/rfl/push/`: pushed lists, tables and dicts-of-tables, ordering across several frames in one read, async string payloads, a missing handler, a nested send on a busy handle, and use-after-close. The client suite now runs twice — with and without an event loop — because the poll path has to be a drop-in for every request/response case, not a feature bolted on next to it.
+
+### Fixed
+
+- **A pushed frame was read as the next response.** The client is a blocking socket nobody watches, so an async frame from a publisher sat in the receive buffer until the following `q_send` consumed it as its own reply — and from then on every response on that connection was one frame out of step. Frames are now routed by message type: RESPONSE to the sender parked on the connection, everything else to evaluation. The bug was timing-dependent, and therefore invisible whenever no push happened to land between two requests.
+- **Connection fds leaked.** `q_on_close` freed the per-connection state but never closed the socket, so every connection the server dropped — protocol error, oversized handshake, peer close — leaked its descriptor. It now closes the fd, like `ipc_on_close` in the core, and releases a RESPONSE that was deposited for a sync wait which died mid-round-trip.
+
+### Changed
+
+- **`.q.connect` attaches to the event loop** when the host runtime has one, and the handle is then a poll selector id rather than a raw socket fd. Handles stay opaque — `.q.send` and `.q.close` take exactly what `.q.connect` returned — and a host without a poll (a binding embedding only the client, the `.rfl` test driver) keeps the blocking path and the fd handle unchanged. `q.c` itself is untouched: its contract of a bare, thread-safe, poll-free fd is what bindings without an event loop depend on.
+- **A non-string request is no longer rejected.** `eval_request` used to answer `only string (char-vector) queries are supported`; it now falls through to `ray_eval`, the same contract the native IPC server has.
+
 ## [2.0.2]
 
 ### Fixed
