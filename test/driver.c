@@ -323,6 +323,16 @@ static int run_codec_selftest(void) {
   }
   release_any(r);
 
+  err[0] = '\0';
+  uint8_t qidentity[] = {101, 0};
+  r = q_decode(qidentity, (int64_t)sizeof qidentity, 0, err, sizeof err);
+  if (r != RAY_NULL_OBJ) {
+    fprintf(stderr, "codec selftest: Q identity did not decode as null: %s\n",
+            err);
+    failures++;
+  }
+  release_any(r);
+
   if (q_connect("127.0.0.1", 70000, "", "", 1) != Q_ERR_SOCKET) {
     fprintf(stderr, "codec selftest: client accepted out-of-range port\n");
     failures++;
@@ -383,6 +393,28 @@ static int run_exchange_selftest(void) {
   free(resp);
   close(sv[0]);
   close(sv[1]);
+
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
+    perror("exchange selftest: socketpair closed-peer");
+    failures++;
+  } else {
+    close(sv[1]);
+    resp = NULL;
+    resp_len = 0;
+    compressed = 0;
+    err[0] = '\0';
+    rc = q_exchange(sv[0], &req, 1, &resp, &resp_len, &compressed, err,
+                    sizeof err);
+    if (rc == 0 || strstr(err, "send") == NULL) {
+      fprintf(stderr,
+              "exchange selftest: closed peer did not fail cleanly: %s\n",
+              err);
+      failures++;
+    }
+    free(resp);
+    close(sv[0]);
+  }
+
   printf("exchange selftest: %s\n", failures ? "FAIL" : "ok");
   return failures ? 1 : 0;
 }

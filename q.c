@@ -98,6 +98,7 @@ static inline size_t ray_scalar_elem_size(int8_t type) {
 #define Q_KT 19 /* time         */
 #define Q_XT 98 /* table        */
 #define Q_XD 99 /* dict         */
+#define Q_ID 101 /* identity     */
 #define Q_ERR (-128)
 
 #define Q_MSG_SYNC 1
@@ -117,6 +118,15 @@ typedef struct {
 static void q_set_err(char *err, size_t errlen, const char *msg) {
   if (err != NULL && errlen > 0)
     snprintf(err, errlen, "%s", msg);
+}
+
+static void q_suppress_sigpipe(int fd) {
+#ifdef SO_NOSIGPIPE
+  int yes = 1;
+  setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &yes, sizeof yes);
+#else
+  (void)fd;
+#endif
 }
 
 /* Build a v2 table from a RAY_SYM-vec of column ids and an array of column
@@ -173,10 +183,15 @@ static ssize_t q_recv_all(int fd, void *buf, size_t n) {
 }
 
 static ssize_t q_send_all(int fd, const void *buf, size_t n) {
+  q_suppress_sigpipe(fd);
   size_t total = 0;
   const uint8_t *p = (const uint8_t *)buf;
   while (total < n) {
+#ifdef MSG_NOSIGNAL
+    ssize_t r = send(fd, p + total, n - total, MSG_NOSIGNAL);
+#else
     ssize_t r = send(fd, p + total, n - total, 0);
+#endif
     if (r <= 0) {
       if (r < 0 && errno == EINTR)
         continue;
@@ -362,7 +377,7 @@ static ray_t *q_make_table(ray_t *keys, ray_t *vals) {
 
 static int64_t q_size_obj(ray_t *obj) {
   if (obj == NULL || obj == RAY_NULL_OBJ)
-    return 1 + 1 + 4; /* type + attrs + len(0) */
+    return 1 + 1; /* identity type + primitive code */
 
   int8_t t = obj->type;
 
@@ -467,7 +482,7 @@ static int64_t q_ser_obj(uint8_t *buf, ray_t *obj) {
   uint8_t *start = buf;
 
   if (obj == NULL || obj == RAY_NULL_OBJ) {
-    *buf++ = 101; /* identity / null */
+    *buf++ = Q_ID; /* identity / null */
     *buf++ = 0;
     return buf - start;
   }
@@ -1097,6 +1112,16 @@ static ray_t *q_des_obj(uint8_t **buf, int64_t *len) {
      * message (full), so bindings reading the message field get the whole
      * string even though the displayed code is length-capped. */
     return ray_error(s, "%s", s);
+  }
+
+  case Q_ID: {
+    Q_NEED(1);
+    uint8_t primitive = **buf;
+    *buf += 1;
+    *len -= 1;
+    if (primitive == 0)
+      return RAY_NULL_OBJ;
+    return ray_error("q: unsupported q primitive", NULL);
   }
 
   default:
