@@ -146,6 +146,15 @@ static ray_t *q_build_table(const int64_t *col_ids, ray_t *const *cols,
   return tbl;
 }
 
+static void q_release_any(ray_t *obj) {
+  if (obj == NULL)
+    return;
+  if (RAY_IS_ERR(obj))
+    ray_error_free(obj);
+  else
+    ray_release(obj);
+}
+
 static ssize_t q_recv_all(int fd, void *buf, size_t n) {
   size_t total = 0;
   uint8_t *p = (uint8_t *)buf;
@@ -428,6 +437,8 @@ static int64_t q_size_obj(ray_t *obj) {
       cols += q_size_obj(ray_table_get_col_idx(obj, i));
     return 3 + names + cols; /* XT + attrs + XD */
   }
+  if (t == RAY_DICT)
+    return 1 + q_size_obj(ray_dict_keys(obj)) + q_size_obj(ray_dict_vals(obj));
   if (t == RAY_ERROR) {
     const char *msg = ray_err_code(obj);
     int64_t n = msg ? (int64_t)strlen(msg) : 0;
@@ -590,9 +601,17 @@ static int64_t q_ser_obj(uint8_t *buf, ray_t *obj) {
     }
     return buf - start;
   }
-  /* RAY_DICT (type code 99) is never produced by v2; dicts present as
-   * RAY_LIST + RAY_ATTR_DICT and are serialized through the RAY_LIST path
-   * above (losing the dict-ness on the wire). */
+  if (t == RAY_DICT) {
+    int64_t r = q_ser_obj(buf, ray_dict_keys(obj));
+    if (r < 0)
+      return -1;
+    buf += r;
+    r = q_ser_obj(buf, ray_dict_vals(obj));
+    if (r < 0)
+      return -1;
+    buf += r;
+    return buf - start;
+  }
   if (t == RAY_ERROR) {
     const char *msg = ray_err_code(obj);
     size_t n = msg ? strlen(msg) : 0;
@@ -1330,7 +1349,7 @@ ray_t *q_decode(uint8_t *resp, int64_t resp_len, int compressed, char *err,
   if (result == NULL)
     q_set_err(err, errlen, "q: deserialization returned null");
   else if (remaining != 0) {
-    ray_release(result);
+    q_release_any(result);
     q_set_err(err, errlen, "q: trailing bytes after object");
     return NULL;
   }
