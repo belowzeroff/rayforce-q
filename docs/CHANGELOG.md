@@ -2,6 +2,17 @@
 
 All notable changes to `rayforce-q` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/), and the project adheres to [Semantic Versioning](https://semver.org/). Bindings pin a tag, so each release is a stable point they can build against.
 
+## [2.1.1]
+
+### Fixed
+
+- **`make rayforce` failed under gcc's `-Werror`.** The sed patch that injects
+  the Q serve hook into the core's `main.c` appended a compound statement after
+  `if (poll) ray_runtime_set_poll(poll);` on the same line, which gcc rejects
+  with `-Werror=misleading-indentation` (clang accepts it, so the break only
+  surfaced on Linux builds). The injection now emits a single braced
+  `if (poll) { ... }` block.
+
 ## [2.1.0]
 
 ### Added
